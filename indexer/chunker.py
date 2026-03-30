@@ -321,115 +321,135 @@ def chunk_document_with_llm(
             continue
 
         # 2. LLM-es chunkolás
-        try:
-            prompt = CHUNKING_USER_PROMPT.format(text=segment)
-            
-            if progress_callback:
-                progress_callback(seg_idx, len(segments))
-            
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "--- LLM KÉRÉS (Szegmens %d/%d) ---\n%s\n"
-                    "----------------------------------",
-                    seg_idx + 1, len(segments), prompt
-                )
+        import time
+        max_retries = 3
+        retry_delay_seconds = 2
+        
+        prompt = CHUNKING_USER_PROMPT.format(text=segment)
+        
+        if progress_callback:
+            progress_callback(seg_idx, len(segments))
+        
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "--- LLM KÉRÉS (Szegmens %d/%d) ---\n%s\n"
+                "----------------------------------",
+                seg_idx + 1, len(segments), prompt
+            )
 
-            if model.startswith("openrouter/"):
-                import urllib.request
-                import json
-                or_model = model.replace("openrouter/", "")
-                api_key = getattr(config, "OPENROUTER_API_KEY", "")
-                if not api_key:
-                    raise ValueError("OPENROUTER_API_KEY nincs beállítva a config.py-ban!")
-                
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "HTTP-Referer": "http://localhost:8000",
-                    "Content-Type": "application/json"
-                }
-                data = json.dumps({
-                    "model": or_model,
-                    "messages": [
-                        {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": config.LLM_TEMPERATURE,
-                }).encode("utf-8")
-                
-                req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=data, headers=headers)
-                with urllib.request.urlopen(req) as resp:
-                    res_body = resp.read().decode("utf-8")
-                    res_json = json.loads(res_body)
-                    response_text = res_json["choices"][0]["message"]["content"]
-            else:
-                response = client.chat(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
-                    options={
+        parsed = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                if model.startswith("openrouter/"):
+                    import urllib.request
+                    import json
+                    or_model = model.replace("openrouter/", "", 1)
+                    if or_model in ("free", "auto"):
+                        or_model = f"openrouter/{or_model}"
+                    api_key = getattr(config, "OPENROUTER_API_KEY", "")
+                    if not api_key:
+                        raise ValueError("OPENROUTER_API_KEY nincs beállítva a config.py-ban!")
+                    
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "HTTP-Referer": "http://localhost:8000",
+                        "Content-Type": "application/json"
+                    }
+                    data = json.dumps({
+                        "model": or_model,
+                        "messages": [
+                            {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
                         "temperature": config.LLM_TEMPERATURE,
-                        "num_ctx": config.LLM_NUM_CTX,
-                    },
-                )
-                response_text = response["message"]["content"]
-            
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "--- LLM VÁLASZ (Szegmens %d/%d) ---\n%s\n"
-                    "-----------------------------------",
-                    seg_idx + 1, len(segments), response_text
-                )
+                    }).encode("utf-8")
+                    
+                    req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=data, headers=headers)
+                    with urllib.request.urlopen(req) as resp:
+                        res_body = resp.read().decode("utf-8")
+                        res_json = json.loads(res_body)
+                        response_text = res_json["choices"][0]["message"]["content"]
+                else:
+                    response = client.chat(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        options={
+                            "temperature": config.LLM_TEMPERATURE,
+                            "num_ctx": config.LLM_NUM_CTX,
+                        },
+                    )
+                    response_text = response["message"]["content"]
+                
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "--- LLM VÁLASZ (Szegmens %d/%d) ---\n%s\n"
+                        "-----------------------------------",
+                        seg_idx + 1, len(segments), response_text
+                    )
 
-            parsed = _parse_llm_chunks(response_text)
-
-            if parsed:
-                logger.info(
-                    "  Szegmens %d/%d: LLM %d chunk-ot azonosított",
-                    seg_idx + 1,
-                    len(segments),
-                    len(parsed),
-                )
-                for item in parsed:
-                    content = item.get("content", "").strip()
-                    if content:
-                        all_chunks.append(
-                            Chunk(
-                                content=content,
-                                summary=item.get("summary", ""),
-                                chunk_index=chunk_index,
-                                source_file=source_file,
-                            )
+                parsed = _parse_llm_chunks(response_text)
+                
+                if parsed:
+                    break
+                else:
+                    if attempt < max_retries:
+                        logger.warning(
+                            "  Szegmens %d/%d: LLM válasz nem parse-olható, újrapróbálkozás (%d/%d)...",
+                            seg_idx + 1, len(segments), attempt, max_retries
                         )
-                        chunk_index += 1
-            else:
-                # JSON parse sikertelen → fallback
-                logger.warning(
-                    "  Szegmens %d/%d: LLM válasz nem parse-olható, fallback chunkolás",
-                    seg_idx + 1,
-                    len(segments),
-                )
-                fallback_items = _fallback_chunk(segment)
-                for item in fallback_items:
+                        time.sleep(retry_delay_seconds)
+                    else:
+                        logger.warning(
+                            "  Szegmens %d/%d: LLM válasz nem parse-olható %d kísérlet után sem, fallback chunkolás",
+                            seg_idx + 1, len(segments), max_retries
+                        )
+
+            except Exception as e:
+                import traceback
+                err_details = str(e)
+                try:
+                    import urllib.error
+                    if isinstance(e, urllib.error.HTTPError):
+                        err_body = e.read().decode('utf-8')
+                        err_details += f" | Body: {err_body}"
+                except Exception:
+                    pass
+
+                if attempt < max_retries:
+                    logger.warning(
+                        "  Szegmens %d/%d: LLM hiba (%s), újrapróbálkozás (%d/%d)...",
+                        seg_idx + 1, len(segments), err_details, attempt, max_retries
+                    )
+                    time.sleep(retry_delay_seconds)
+                else:
+                    logger.error(
+                        "  Szegmens %d/%d: LLM hiba (%s), fallback chunkolás %d kísérlet után",
+                        seg_idx + 1, len(segments), err_details, max_retries
+                    )
+
+        if parsed:
+            logger.info(
+                "  Szegmens %d/%d: LLM %d chunk-ot azonosított",
+                seg_idx + 1,
+                len(segments),
+                len(parsed),
+            )
+            for item in parsed:
+                content = item.get("content", "").strip()
+                if content:
                     all_chunks.append(
                         Chunk(
-                            content=item["content"],
+                            content=content,
                             summary=item.get("summary", ""),
                             chunk_index=chunk_index,
                             source_file=source_file,
                         )
                     )
                     chunk_index += 1
-
-        except Exception as e:
-            # LLM hiba → fallback
-            logger.warning(
-                "  Szegmens %d/%d: LLM hiba (%s), fallback chunkolás",
-                seg_idx + 1,
-                len(segments),
-                str(e),
-            )
+        else:
             fallback_items = _fallback_chunk(segment)
             for item in fallback_items:
                 all_chunks.append(

@@ -104,23 +104,86 @@ def _parse_llm_chunks(response_text: str) -> list[dict] | None:
         except (json.JSONDecodeError, TypeError):
             return None
 
-    # 1. Közvetlen parse
-    result = _try_parse(response_text)
+    def _fix_json_strings(text):
+        """
+        Az LLM gyakran érvénytelen escape szekvenciákat tesz a JSON string-ekbe:
+        - Literal sortörések (newline helyett valódi newline)
+        - Markdown escape-ek: backslash+( backslash+) stb. (nem valid JSON escape)
+        Ezeket javítjuk, hogy valid JSON legyen.
+        """
+        fixed = []
+        in_string = False
+        i = 0
+        while i < len(text):
+            ch = text[i]
+
+            if not in_string:
+                if ch == '"':
+                    in_string = True
+                fixed.append(ch)
+                i += 1
+                continue
+
+            # String-en belül vagyunk
+            if ch == '"':
+                # String vége (nem escaped)
+                in_string = False
+                fixed.append(ch)
+                i += 1
+                continue
+
+            if ch == '\\' and i + 1 < len(text):
+                next_ch = text[i + 1]
+                # Valid JSON escape szekvenciák: \" \\ \/ \b \f \n \r \t \uXXXX
+                if next_ch in ('"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'):
+                    fixed.append(ch)
+                    fixed.append(next_ch)
+                    i += 2
+                    continue
+                else:
+                    # Érvénytelen escape → dupla backslash-re cseréljük: \( → \\(
+                    fixed.append('\\\\')
+                    i += 1
+                    continue
+
+            if ch == '\n':
+                fixed.append('\\n')
+                i += 1
+                continue
+
+            if ch == '\r':
+                i += 1
+                continue
+
+            if ch == '\t':
+                fixed.append('\\t')
+                i += 1
+                continue
+
+            fixed.append(ch)
+            i += 1
+
+        return ''.join(fixed)
+
+    # 0. JSON string-ek javítása (érvénytelen escape szekvenciák + literal newline-ok)
+    fixed_text = _fix_json_strings(response_text)
+
+    # 1. Közvetlen parse (javított szöveggel)
+    result = _try_parse(fixed_text)
     if result:
         return result
 
     # 2. Markdown code block-ban keresés (```json ... ``` vagy ``` ... ```)
-    code_block_matches = re.findall(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", response_text)
+    code_block_matches = re.findall(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", fixed_text)
     for match in code_block_matches:
         result = _try_parse(match)
         if result:
             return result
 
     # 3. JSON tömb keresés a szövegben (legkülső [ ... ] pár)
-    # Keresi a leghosszabb érvényes JSON tömböt
     bracket_depth = 0
     start_idx = None
-    for i, ch in enumerate(response_text):
+    for i, ch in enumerate(fixed_text):
         if ch == '[':
             if bracket_depth == 0:
                 start_idx = i
@@ -128,21 +191,21 @@ def _parse_llm_chunks(response_text: str) -> list[dict] | None:
         elif ch == ']':
             bracket_depth -= 1
             if bracket_depth == 0 and start_idx is not None:
-                candidate = response_text[start_idx:i + 1]
+                candidate = fixed_text[start_idx:i + 1]
                 result = _try_parse(candidate)
                 if result:
                     return result
 
     # 4. Trailing comma javítás és újrapróbálás
-    cleaned = re.sub(r",\s*([}\]])", r"\1", response_text)
+    cleaned = re.sub(r",\s*([}\]])", r"\1", fixed_text)
     result = _try_parse(cleaned)
     if result:
         return result
 
-    # 5. Ha semmi nem működött, logoljuk a választ debug-hoz
-    logger.debug(
-        "JSON parse sikertelen. LLM válasz (első 500 karakter): %s",
-        response_text[:500],
+    # 5. Ha semmi nem működött, logoljuk a választ
+    logger.warning(
+        "JSON parse sikertelen. LLM válasz (első 300 karakter): %.300s",
+        response_text,
     )
     return None
 

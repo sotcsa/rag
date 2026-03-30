@@ -257,7 +257,9 @@ def main():
     # Feldolgozás
     total_chunks = 0
     errors = 0
+    processed_count = 0
     start_time = time.time()
+    interrupted = False
 
     with Progress(
         SpinnerColumn(),
@@ -273,9 +275,25 @@ def main():
             try:
                 chunk_count = index_file(file_path, vector_store, tracker, logger)
                 total_chunks += chunk_count
+                processed_count += 1
                 console.print(
                     f"  [green]✅ {file_path.name}[/] → {chunk_count} chunk"
                 )
+            except KeyboardInterrupt:
+                console.print(
+                    f"\n  [yellow]⏭ {file_path.name} — megszakítva (Ctrl+C)[/]"
+                )
+                console.print(
+                    "[yellow]  Nyomj még egy Ctrl+C-t a teljes leálláshoz, "
+                    "vagy várd meg a következő fájlt.[/]\n"
+                )
+                try:
+                    # Adjunk esélyt a második Ctrl+C-nek
+                    import signal
+                    signal.alarm(0)  # reset
+                except Exception:
+                    pass
+                continue
             except Exception as e:
                 errors += 1
                 tracker.mark_error(file_path, str(e))
@@ -289,7 +307,7 @@ def main():
     # Összesítés
     console.print(f"\n[bold]📊 Összesítés[/]")
     console.print(f"  Idő: {elapsed:.1f} mp")
-    console.print(f"  Feldolgozott fájlok: {len(unprocessed) - errors}")
+    console.print(f"  Feldolgozott fájlok: {processed_count}")
     console.print(f"  Hibák: {errors}")
     console.print(f"  Új chunkok: {total_chunks}")
     console.print(f"  Összes chunk a DB-ben: {vector_store.get_count()}")
@@ -297,4 +315,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        Console().print("\n[yellow]👋 Indexelés megszakítva.[/]\n")
+

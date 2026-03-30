@@ -125,6 +125,7 @@ def index_file(
     tracker: Tracker,
     logger: logging.Logger,
     progress_callback=None,
+    model: str = None,
 ) -> int:
     """
     Egyetlen fájl feldolgozása és indexelése.
@@ -147,9 +148,10 @@ def index_file(
     vector_store.delete_by_source(str(file_path))
 
     # 3. LLM-alapú chunkolás
-    logger.info("🧠 Chunkolás: %s", filename)
+    selected_model = model or config.LLM_MODEL
+    logger.info("🧠 Chunkolás: %s (Modell: %s)", filename, selected_model)
     chunks = chunk_document_with_llm(
-        doc.content, str(file_path), progress_callback=progress_callback
+        doc.content, str(file_path), model=model, progress_callback=progress_callback
     )
 
     if not chunks:
@@ -207,9 +209,24 @@ def main():
         help="Minden fájl újraindexelése (tracker törlése)",
     )
     parser.add_argument(
+        "--file",
+        type=str,
+        help="Csak egy adott fájl (újra)indexelése (pl. data/minta.pdf)",
+    )
+    parser.add_argument(
+        "--remove",
+        type=str,
+        help="Adott fájl törlése az indexből és a nyilvántartásból",
+    )
+    parser.add_argument(
         "--status",
         action="store_true",
         help="Indexelési állapot kiírása",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        help=f"LLM modell a chunkoláshoz (alapértelmezett, vagy Ollama model name, vagy openrouter/model_name)",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -229,6 +246,15 @@ def main():
         show_status(tracker, vector_store)
         return
 
+    # Fájl törlése
+    if args.remove:
+        file_path = Path(args.remove).resolve()
+        console.print(f"[yellow]🗑 Fájl törlése a DB-ből és nyilvántartásból: {file_path}[/]")
+        vector_store.delete_by_source(str(file_path))
+        tracker.remove_file(file_path)
+        console.print("[green]✅ Sikeresen törölve.[/]")
+        return
+
     source_dir = Path(args.source_dir)
     if not source_dir.exists():
         source_dir.mkdir(parents=True)
@@ -244,7 +270,15 @@ def main():
         tracker.clear()
 
     # Feldolgozandó fájlok meghatározása
-    unprocessed = tracker.get_unprocessed_files(source_dir)
+    if args.file:
+        target_file = Path(args.file).resolve()
+        if not target_file.is_file():
+            console.print(f"[red]❌ Hiba: A fájl nem található: {target_file}[/]")
+            return
+        # Csak ezt a fájlt dolgozzuk fel, kényszerítve az újraindexelést
+        unprocessed = [target_file]
+    else:
+        unprocessed = tracker.get_unprocessed_files(source_dir)
 
     if not unprocessed:
         console.print("[green]✅ Minden fájl naprakész, nincs új feldolgozandó dokumentum.[/]")
@@ -292,7 +326,7 @@ def main():
 
             try:
                 chunk_count = index_file(
-                    file_path, vector_store, tracker, logger, segment_callback
+                    file_path, vector_store, tracker, logger, segment_callback, model=args.model
                 )
                 total_chunks += chunk_count
                 processed_count += 1

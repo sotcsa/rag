@@ -10,6 +10,7 @@ Teljesen lokálisan futó, **magyar nyelvű** dokumentumkereső rendszer, amely 
 - **Intelligens chunkolás** — LLM-alapú szövegszegmentálás a legjobb keresési minőségért
 - **Inkrementális indexelés** — Csak az új/módosult fájlokat dolgozza fel
 - **Hordozható adatbázis** — Az egész tudásbázis egy mappa, ami USB-n átvihető másik gépre
+- **Felhős gyorsítás** — OpenRouter integráció a tízszer gyorsabb, ingyenes chunkoláshoz (opcionális, `.env` fájlból)
 
 ## 🖥️ Rendszerkövetelmények
 
@@ -35,6 +36,14 @@ Ez letölti a szükséges AI modelleket (~10 GB összesen):
 - `qwen2.5:14b` — LLM a chunkoláshoz és válaszgeneráláshoz
 - `bge-m3` — Embedding modell a kereséshez
 
+### Beállítás (.env)
+
+Hozd létre a `.env` fájlt a gyökérkönyvtárban a `.env.example` alapján:
+```env
+OPENROUTER_API_KEY="sk-or-v1-saját-kulcs"
+```
+Erre akkor van szükség, ha gyorsabb, felhős AI modellt szeretnél használni a feldolgozáshoz (pl. ingyenes Gemini). Minden egyéb konfiguráció (pl. mappák, default modellek) a `config.py` fájlban található.
+
 ## 📖 Használat
 
 ### 1. Dokumentumok elhelyezése
@@ -54,6 +63,18 @@ Almappák is támogatottak — a rendszer rekurzívan bejárja a könyvtárat.
 ```bash
 # Inkrementális indexelés (csak új/módosult fájlok)
 uv run python index.py
+
+# Gyorsabb lokális modellel
+uv run python index.py --model qwen2.5:7b
+
+# Ingyenes, villámgyors felhős modellel (OpenRouter)
+uv run python index.py --model openrouter/google/gemini-2.5-flash-free
+
+# Egy adott fájl újraindexelése
+uv run python index.py --file data/minta.pdf
+
+# Egy fájl törlése az adatbázisból és az indexből
+uv run python index.py --remove data/torlendo.pdf
 
 # Egyedi forráskönyvtár megadása
 uv run python index.py --source-dir /path/to/documents
@@ -132,6 +153,7 @@ A `config.py` fájlban módosítható:
 
 | Beállítás | Alapérték | Leírás |
 |:--|:--|:--|
+| `OPENROUTER_API_KEY` | `.env`-ből | API kulcs a felhős modellekhez (opcionális) |
 | `LLM_MODEL` | `qwen2.5:14b` | LLM modell neve |
 | `EMBEDDING_MODEL` | `bge-m3` | Embedding modell neve |
 | `DATA_DIR` | `./data` | Dokumentumok forráskönyvtára |
@@ -142,6 +164,8 @@ A `config.py` fájlban módosítható:
 
 ```
 rag/
+├── .env                   # Jelszavak, kulcsok (lokális fájl)
+├── .env.example           # Template a .env-hez
 ├── config.py              # Konfiguráció
 ├── pyproject.toml         # Függőségek (uv)
 ├── setup.sh               # Telepítő script

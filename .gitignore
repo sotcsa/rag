@@ -11,6 +11,7 @@ uv.lock
 chroma_db/
 tracking.db
 data/
+.env
 
 # OS
 .DS_Store

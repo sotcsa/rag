@@ -274,6 +274,7 @@ def chunk_document_with_llm(
     text: str,
     source_file: str,
     model: str = None,
+    progress_callback=None,
 ) -> list[Chunk]:
     """
     Dokumentum szöveg LLM-alapú chunkolása.
@@ -323,6 +324,9 @@ def chunk_document_with_llm(
         try:
             prompt = CHUNKING_USER_PROMPT.format(text=segment)
             
+            if progress_callback:
+                progress_callback(seg_idx, len(segments))
+            
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     "--- LLM KÉRÉS (Szegmens %d/%d) ---\n%s\n"
@@ -330,19 +334,46 @@ def chunk_document_with_llm(
                     seg_idx + 1, len(segments), prompt
                 )
 
-            response = client.chat(
-                model=model,
-                messages=[
-                    {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                options={
+            if model.startswith("openrouter/"):
+                import urllib.request
+                import json
+                or_model = model.replace("openrouter/", "")
+                api_key = getattr(config, "OPENROUTER_API_KEY", "")
+                if not api_key:
+                    raise ValueError("OPENROUTER_API_KEY nincs beállítva a config.py-ban!")
+                
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "HTTP-Referer": "http://localhost:8000",
+                    "Content-Type": "application/json"
+                }
+                data = json.dumps({
+                    "model": or_model,
+                    "messages": [
+                        {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
                     "temperature": config.LLM_TEMPERATURE,
-                    "num_ctx": config.LLM_NUM_CTX,
-                },
-            )
-
-            response_text = response["message"]["content"]
+                }).encode("utf-8")
+                
+                req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=data, headers=headers)
+                with urllib.request.urlopen(req) as resp:
+                    res_body = resp.read().decode("utf-8")
+                    res_json = json.loads(res_body)
+                    response_text = res_json["choices"][0]["message"]["content"]
+            else:
+                response = client.chat(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    options={
+                        "temperature": config.LLM_TEMPERATURE,
+                        "num_ctx": config.LLM_NUM_CTX,
+                    },
+                )
+                response_text = response["message"]["content"]
             
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(

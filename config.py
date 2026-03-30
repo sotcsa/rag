@@ -3,7 +3,11 @@ RAG alkalmazás konfigurációja.
 Mac Mini M4 24GB-re optimalizálva.
 """
 
+import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Útvonalak ---
 BASE_DIR = Path(__file__).parent
@@ -18,6 +22,10 @@ OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 LLM_MODEL = "qwen2.5:14b"
 LLM_TEMPERATURE = 0.1  # Alacsony hőmérséklet a determinisztikus chunkoláshoz
 LLM_NUM_CTX = 8192  # Kontextus ablak méret (RAM-barát)
+
+# --- OpenRouter beállítások ---
+# Ha OpenRouter modelleket használnál (pl. a gyorsabb google/gemini-2.5-flash-free), töltsd ki ezt a .env fájlban!
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 # Embedding modell
 EMBEDDING_MODEL = "bge-m3"

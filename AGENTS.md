@@ -36,6 +36,7 @@ Search: query → embed → vector search → LLM answer generation
 | DOCX | `python-docx` | Paragraph-level extraction with heading styles. |
 | Package mgr | `uv` | `pyproject.toml` is the source of truth for dependencies. |
 | CLI output | `rich` | Formatted tables, progress bars, streaming output. |
+| Env config | `python-dotenv` | Secrets and API keys loaded from `.env`. |
 
 ## Directory Structure
 
@@ -45,6 +46,8 @@ rag/
 ├── pyproject.toml             # uv project file + dependencies
 ├── requirements.txt           # Legacy reference (pyproject.toml is canonical)
 ├── setup.sh                   # One-time setup: Ollama models + uv sync
+├── .env                       # Local secrets (e.g. OpenRouter API key, ignored by git)
+├── .env.example               # Template for the .env file
 ├── .gitignore
 │
 ├── indexer/                   # Document processing pipeline
@@ -76,6 +79,7 @@ rag/
 - Each block is sent to `qwen2.5:14b` with a Hungarian prompt asking it to identify logical semantic units
 - The LLM returns JSON: `[{"summary": "...", "content": "..."}, ...]`
 - Robust JSON parsing handles markdown code blocks, extra text around JSON
+- **OpenRouter Support**: Chunking supports external cloud models (e.g., `openrouter/google/gemini-2.5-flash-free`) via API if configured in `.env`.
 - **Fallback**: If LLM fails or returns unparseable output, recursive character-based chunking (2000 chars, 200 overlap) is used
 - Summaries are prepended to chunk text before embedding for better retrieval
 
@@ -100,8 +104,11 @@ rag/
 ### Running commands
 ```bash
 uv run python index.py                    # Incremental indexing
+uv run python index.py --model modelname  # Override chunking model (e.g., qwen2.5:7b or openrouter/...)
 uv run python index.py --status           # Show indexed files detail
 uv run python index.py --force            # Force full re-index
+uv run python index.py --file path/to/doc # Force re-index a single document
+uv run python index.py --remove path/doc  # Remove a single document from the index
 uv run python search.py "question"        # Single query
 uv run python search.py --chat            # Interactive chat
 ```
@@ -135,6 +142,7 @@ All tuneable parameters are in `config.py`. Key ones:
 - `python-docx>=1.1.0` — DOCX extraction
 - `ollama>=0.4.0` — Ollama Python SDK
 - `rich>=13.0` — Terminal formatting
+- `python-dotenv` — Environment variable loading
 
 ## External Dependencies (not pip)
 - **Ollama** must be installed and running (`https://ollama.ai`)

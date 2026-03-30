@@ -39,6 +39,7 @@ Szabályok:
 4. Kapcsolódó információkat tarts együtt (pl. definíció + példa, kérdés + válasz)
 5. Minden egységhez adj egy tömör, 1 mondatos magyar összefoglalót
 6. Ha a szöveg rövid (kevesebb mint 150 szó), adj vissza egyetlen chunkot
+7. KRITIKUS: MINDEN belső idézőjelet (") escape-elj (\\") a 'content' és 'summary' értékeken belül!
 
 Válaszolj KIZÁRÓLAG érvényes JSON formátumban, semmilyen más szöveget ne írj:
 [{{"summary": "Egymondatos összefoglaló", "content": "A chunk teljes szövege..."}}, ...]
@@ -126,11 +127,25 @@ def _parse_llm_chunks(response_text: str) -> list[dict] | None:
 
             # String-en belül vagyunk
             if ch == '"':
-                # String vége (nem escaped)
-                in_string = False
-                fixed.append(ch)
-                i += 1
-                continue
+                # String vége, vagy belső idézőjel?
+                # A JSON string végét a kulcsoknál ':' a valuesoknál ',', '}', vagy ']' követheti.
+                lookahead = ""
+                for j in range(i + 1, len(text)):
+                    if not text[j].isspace():
+                        lookahead = text[j]
+                        break
+                
+                if lookahead in (':', ',', '}', ']', ''):
+                    # Valódi string vége
+                    in_string = False
+                    fixed.append(ch)
+                    i += 1
+                    continue
+                else:
+                    # Belső, escapálatlan idézőjel! Javítjuk.
+                    fixed.append('\\"')
+                    i += 1
+                    continue
 
             if ch == '\\' and i + 1 < len(text):
                 next_ch = text[i + 1]
@@ -307,6 +322,14 @@ def chunk_document_with_llm(
         # 2. LLM-es chunkolás
         try:
             prompt = CHUNKING_USER_PROMPT.format(text=segment)
+            
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "--- LLM KÉRÉS (Szegmens %d/%d) ---\n%s\n"
+                    "----------------------------------",
+                    seg_idx + 1, len(segments), prompt
+                )
+
             response = client.chat(
                 model=model,
                 messages=[
@@ -320,6 +343,14 @@ def chunk_document_with_llm(
             )
 
             response_text = response["message"]["content"]
+            
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "--- LLM VÁLASZ (Szegmens %d/%d) ---\n%s\n"
+                    "-----------------------------------",
+                    seg_idx + 1, len(segments), response_text
+                )
+
             parsed = _parse_llm_chunks(response_text)
 
             if parsed:

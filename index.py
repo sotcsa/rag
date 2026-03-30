@@ -30,12 +30,13 @@ console = Console()
 
 
 def setup_logging(verbose: bool = False):
-    """Logging beállítás Rich formázással."""
+    """Logging beállítás Rich formázással, explicit időbélyegekkel."""
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
-        format="%(message)s",
-        handlers=[RichHandler(console=console, rich_tracebacks=True)],
+        format="%(asctime)s.%(msecs)03d | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[RichHandler(console=console, rich_tracebacks=True, show_time=False)],
     )
 
 
@@ -123,6 +124,7 @@ def index_file(
     vector_store: VectorStore,
     tracker: Tracker,
     logger: logging.Logger,
+    progress_callback=None,
 ) -> int:
     """
     Egyetlen fájl feldolgozása és indexelése.
@@ -146,7 +148,9 @@ def index_file(
 
     # 3. LLM-alapú chunkolás
     logger.info("🧠 Chunkolás: %s", filename)
-    chunks = chunk_document_with_llm(doc.content, str(file_path))
+    chunks = chunk_document_with_llm(
+        doc.content, str(file_path), progress_callback=progress_callback
+    )
 
     if not chunks:
         logger.warning("⚠ Nem sikerült chunk-olni: %s", filename)
@@ -268,12 +272,28 @@ def main():
         TaskProgressColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Indexelés...", total=len(unprocessed))
+        task_files = progress.add_task("Fájlok", total=len(unprocessed))
+        task_segments = progress.add_task("Szegmensek (LLM)", total=1, visible=False)
 
         for file_path in unprocessed:
-            progress.update(task, description=f"[cyan]{file_path.name}[/]")
+            progress.update(task_files, description=f"[cyan]{file_path.name}[/]")
+            progress.update(task_segments, visible=False)
+            
+            def segment_callback(current, total):
+                if not progress.tasks[task_segments].visible:
+                    progress.update(task_segments, visible=True)
+                # +1 mert a current 0-indexált
+                progress.update(
+                    task_segments, 
+                    description=f"[magenta]  Szegmensek ({current}/{total})[/]", 
+                    completed=current, 
+                    total=total
+                )
+
             try:
-                chunk_count = index_file(file_path, vector_store, tracker, logger)
+                chunk_count = index_file(
+                    file_path, vector_store, tracker, logger, segment_callback
+                )
                 total_chunks += chunk_count
                 processed_count += 1
                 console.print(
@@ -300,7 +320,7 @@ def main():
                 console.print(f"  [red]❌ {file_path.name}[/]: {e}")
                 logger.exception("Hiba a fájl feldolgozásakor: %s", file_path)
 
-            progress.advance(task)
+            progress.advance(task_files)
 
     elapsed = time.time() - start_time
 

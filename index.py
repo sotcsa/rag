@@ -39,35 +39,83 @@ def setup_logging(verbose: bool = False):
     )
 
 
+def _human_size(size_bytes: int) -> str:
+    """Fájlméret ember-olvasható formátumban."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    else:
+        return f"{size_bytes / 1024 / 1024:.1f} MB"
+
+
 def show_status(tracker: Tracker, vector_store: VectorStore):
-    """Indexelési állapot kiírása."""
+    """Indexelési állapot részletes kiírása."""
     stats = tracker.get_stats()
 
-    table = Table(title="📊 Indexelési Állapot")
-    table.add_column("Metrika", style="cyan")
-    table.add_column("Érték", style="green", justify="right")
+    # --- Összesítő táblázat ---
+    summary = Table(title="📊 Indexelési Összesítés", show_header=False, border_style="cyan")
+    summary.add_column("Metrika", style="bold cyan", min_width=25)
+    summary.add_column("Érték", style="green", justify="right")
 
-    table.add_row("Feldolgozott fájlok", str(stats["processed_files"]))
-    table.add_row("Hibás fájlok", str(stats["error_files"]))
-    table.add_row("Összes chunk", str(stats["total_chunks"]))
-    table.add_row(
-        "Összes méret",
-        f"{stats['total_size_bytes'] / 1024 / 1024:.1f} MB",
-    )
-    table.add_row("ChromaDB elemek", str(vector_store.get_count()))
+    summary.add_row("Feldolgozott fájlok", str(stats["processed_files"]))
+    summary.add_row("Hibás fájlok", str(stats["error_files"]) if stats["error_files"] else "—")
+    summary.add_row("Összes chunk", str(stats["total_chunks"]))
+    summary.add_row("Összes forrásfájl méret", _human_size(stats["total_size_bytes"]))
+    summary.add_row("ChromaDB elemek", str(vector_store.get_count()))
 
-    console.print(table)
+    console.print()
+    console.print(summary)
 
-    # Részletes lista
+    # --- Fájlonkénti részletes táblázat ---
     processed = tracker.get_all_processed()
-    if processed:
-        console.print("\n[bold]Fájlok:[/]")
-        for f in processed:
-            status_icon = "✅" if f["status"] == "ok" else "❌"
-            console.print(
-                f"  {status_icon} {f['file_path']} "
-                f"[dim]({f['chunk_count']} chunk, {f['indexed_at']})[/]"
-            )
+    if not processed:
+        console.print("\n[yellow]Nincs indexelt dokumentum.[/]")
+        console.print("Futtasd: [bold]uv run python index.py[/]")
+        return
+
+    detail = Table(title="\n📁 Indexelt Fájlok Részletei", border_style="dim")
+    detail.add_column("#", style="dim", justify="right", width=4)
+    detail.add_column("Fájlnév", style="cyan", max_width=40)
+    detail.add_column("Méret", justify="right", style="green")
+    detail.add_column("Chunkok", justify="right", style="yellow")
+    detail.add_column("Indexelve", style="dim")
+    detail.add_column("Státusz", justify="center")
+    detail.add_column("Hash (SHA-256)", style="dim", max_width=16)
+
+    for i, f in enumerate(processed, 1):
+        status = f["status"]
+        if status == "ok":
+            status_display = "[green]✅ OK[/]"
+        elif status.startswith("error"):
+            error_msg = status.replace("error: ", "").replace("error", "hiba")
+            status_display = f"[red]❌ {error_msg[:20]}[/]"
+        else:
+            status_display = f"[yellow]⚠ {status}[/]"
+
+        # Fájlnév: csak a basename
+        filepath = Path(f["file_path"])
+        filename = filepath.name
+
+        # Dátum formázás: csak dátum + idő (UTC string rövidítés)
+        indexed_at = f["indexed_at"] or "—"
+        if "T" in indexed_at:
+            indexed_at = indexed_at.replace("T", " ")[:19]
+
+        # Hash rövidítés
+        file_hash = f["file_hash"][:12] + "…" if f["file_hash"] and len(f["file_hash"]) > 12 else (f["file_hash"] or "—")
+
+        detail.add_row(
+            str(i),
+            filename,
+            _human_size(f["file_size"] or 0),
+            str(f["chunk_count"] or 0),
+            indexed_at,
+            status_display,
+            file_hash,
+        )
+
+    console.print(detail)
 
 
 def index_file(

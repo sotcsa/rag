@@ -118,6 +118,7 @@ def load_document(file_path: Path) -> Document:
         ".pdf": load_pdf,
         ".docx": load_docx,
         ".txt": load_txt,
+        ".md": load_txt,
     }
 
     loader = loaders.get(suffix)

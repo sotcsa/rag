@@ -9,9 +9,8 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-import ollama
-
 import config
+from ollama_client import client
 
 logger = logging.getLogger(__name__)
 
@@ -88,41 +87,63 @@ def _parse_llm_chunks(response_text: str) -> list[dict] | None:
     LLM válasz JSON-jának parse-olása.
     Robusztus: megpróbálja kinyerni a JSON-t akkor is, ha extra szöveg veszi körül.
     """
-    # Először próbáljuk közvetlenül
-    try:
-        result = json.loads(response_text)
-        if isinstance(result, list) and all(
-            "content" in item and "summary" in item for item in result
+
+    def _validate(data):
+        """Ellenőrzi, hogy a parse-olt adat megfelelő formátumú-e."""
+        if isinstance(data, list) and len(data) > 0 and all(
+            isinstance(item, dict) and "content" in item and "summary" in item
+            for item in data
         ):
+            return data
+        return None
+
+    def _try_parse(text):
+        """Próbálja parse-olni a szöveget JSON-ként."""
+        try:
+            return _validate(json.loads(text))
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    # 1. Közvetlen parse
+    result = _try_parse(response_text)
+    if result:
+        return result
+
+    # 2. Markdown code block-ban keresés (```json ... ``` vagy ``` ... ```)
+    code_block_matches = re.findall(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", response_text)
+    for match in code_block_matches:
+        result = _try_parse(match)
+        if result:
             return result
-    except json.JSONDecodeError:
-        pass
 
-    # Ha nem sikerült, keressük meg a JSON tömböt a szövegben
-    # Keressünk [ ... ] mintát
-    json_match = re.search(r"\[.*\]", response_text, re.DOTALL)
-    if json_match:
-        try:
-            result = json.loads(json_match.group())
-            if isinstance(result, list) and all(
-                "content" in item and "summary" in item for item in result
-            ):
-                return result
-        except json.JSONDecodeError:
-            pass
+    # 3. JSON tömb keresés a szövegben (legkülső [ ... ] pár)
+    # Keresi a leghosszabb érvényes JSON tömböt
+    bracket_depth = 0
+    start_idx = None
+    for i, ch in enumerate(response_text):
+        if ch == '[':
+            if bracket_depth == 0:
+                start_idx = i
+            bracket_depth += 1
+        elif ch == ']':
+            bracket_depth -= 1
+            if bracket_depth == 0 and start_idx is not None:
+                candidate = response_text[start_idx:i + 1]
+                result = _try_parse(candidate)
+                if result:
+                    return result
 
-    # Markdown code block-ban lévő JSON
-    code_block_match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", response_text, re.DOTALL)
-    if code_block_match:
-        try:
-            result = json.loads(code_block_match.group(1))
-            if isinstance(result, list) and all(
-                "content" in item and "summary" in item for item in result
-            ):
-                return result
-        except json.JSONDecodeError:
-            pass
+    # 4. Trailing comma javítás és újrapróbálás
+    cleaned = re.sub(r",\s*([}\]])", r"\1", response_text)
+    result = _try_parse(cleaned)
+    if result:
+        return result
 
+    # 5. Ha semmi nem működött, logoljuk a választ debug-hoz
+    logger.debug(
+        "JSON parse sikertelen. LLM válasz (első 500 karakter): %s",
+        response_text[:500],
+    )
     return None
 
 
@@ -223,7 +244,7 @@ def chunk_document_with_llm(
         # 2. LLM-es chunkolás
         try:
             prompt = CHUNKING_USER_PROMPT.format(text=segment)
-            response = ollama.chat(
+            response = client.chat(
                 model=model,
                 messages=[
                     {"role": "system", "content": CHUNKING_SYSTEM_PROMPT},

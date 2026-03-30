@@ -12,7 +12,7 @@ CHROMA_DB_DIR = BASE_DIR / "chroma_db"
 TRACKING_DB_PATH = BASE_DIR / "tracking.db"
 
 # --- Ollama beállítások ---
-OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 # LLM modell chunkoláshoz és válaszgeneráláshoz
 LLM_MODEL = "qwen2.5:14b"
@@ -40,4 +40,4 @@ SEARCH_TOP_K = 5  # Hány releváns chunkot kérjünk
 SEARCH_MIN_SIMILARITY = 0.3  # Minimum hasonlóság (0-1, alacsonyabb = több eredmény)
 
 # --- Támogatott fájlformátumok ---
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}

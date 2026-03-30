@@ -4,9 +4,8 @@ Embedding generálás az Ollama bge-m3 modellel.
 
 import logging
 
-import ollama
-
 import config
+from ollama_client import client
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ def generate_embeddings(texts: list[str], model: str = None) -> list[list[float]
 
     logger.info("Embedding generálás: %d szöveg (%s modell)", len(texts), model)
 
-    response = ollama.embed(model=model, input=texts)
+    response = client.embed(model=model, input=texts)
     embeddings = response["embeddings"]
 
     logger.info("Embedding kész: %d vektor, dimenzió: %d", len(embeddings), len(embeddings[0]))
@@ -45,5 +44,5 @@ def generate_single_embedding(text: str, model: str = None) -> list[float]:
     Kérdések embedding-jéhez használjuk a keresésnél.
     """
     model = model or config.EMBEDDING_MODEL
-    response = ollama.embed(model=model, input=[text])
+    response = client.embed(model=model, input=[text])
     return response["embeddings"][0]

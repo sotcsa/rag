@@ -5,9 +5,8 @@ A megtalált kontextus chunkok és a felhasználói kérdés alapján generál v
 
 import logging
 
-import ollama
-
 import config
+from ollama_client import client
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +71,7 @@ def generate_answer(
     if stream:
         return _stream_response(model, prompt)
     else:
-        response = ollama.chat(
+        response = client.chat(
             model=model,
             messages=[
                 {"role": "system", "content": RAG_SYSTEM_PROMPT},
@@ -88,7 +87,7 @@ def generate_answer(
 
 def _stream_response(model: str, prompt: str):
     """Token-enként streamed válasz generálás."""
-    stream = ollama.chat(
+    stream = client.chat(
         model=model,
         messages=[
             {"role": "system", "content": RAG_SYSTEM_PROMPT},

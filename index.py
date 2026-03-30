@@ -21,7 +21,7 @@ from rich.table import Table
 
 import config
 from indexer.document_loader import load_document
-from indexer.chunker import chunk_document_with_llm, Chunk
+from indexer.chunker import chunk_document_with_llm, Chunk, ChunkingPerformance
 from indexer.embedder import generate_embeddings
 from indexer.vectorstore import VectorStore
 from indexer.tracker import Tracker
@@ -150,7 +150,7 @@ def index_file(
     # 3. LLM-alapú chunkolás
     selected_model = model or config.LLM_MODEL
     logger.info("🧠 Chunkolás: %s (Modell: %s)", filename, selected_model)
-    chunks = chunk_document_with_llm(
+    chunks, perf = chunk_document_with_llm(
         doc.content, str(file_path), model=model, progress_callback=progress_callback
     )
 
@@ -190,7 +190,7 @@ def index_file(
     # 7. Tracker frissítés
     tracker.mark_processed(file_path, chunk_count=len(chunks))
 
-    return len(chunks)
+    return len(chunks), perf
 
 
 def main():
@@ -298,6 +298,7 @@ def main():
     processed_count = 0
     start_time = time.time()
     interrupted = False
+    all_perf = ChunkingPerformance()
 
     with Progress(
         SpinnerColumn(),
@@ -325,13 +326,26 @@ def main():
                 )
 
             try:
-                chunk_count = index_file(
+                chunk_count, file_perf = index_file(
                     file_path, vector_store, tracker, logger, segment_callback, model=args.model
                 )
                 total_chunks += chunk_count
                 processed_count += 1
+                # Accumulate performance stats
+                if file_perf.total_llm_calls > 0:
+                    all_perf.total_elapsed += file_perf.total_elapsed
+                    all_perf.total_input_tokens += file_perf.total_input_tokens
+                    all_perf.total_output_tokens += file_perf.total_output_tokens
+                    all_perf.total_llm_calls += file_perf.total_llm_calls
+                    all_perf.total_cost_usd += file_perf.total_cost_usd
+                    all_perf.segment_stats.extend(file_perf.segment_stats)
+                
+                speed_info = ""
+                if file_perf.total_llm_calls > 0:
+                    cost_part = f", ${file_perf.total_cost_usd:.6f}" if file_perf.total_cost_usd > 0 else ""
+                    speed_info = f" ({file_perf.total_elapsed:.1f}s, {file_perf.avg_tokens_per_second:.1f} tok/s{cost_part})"
                 console.print(
-                    f"  [green]✅ {file_path.name}[/] → {chunk_count} chunk"
+                    f"  [green]✅ {file_path.name}[/] → {chunk_count} chunk{speed_info}"
                 )
             except KeyboardInterrupt:
                 console.print(
@@ -365,6 +379,20 @@ def main():
     console.print(f"  Hibák: {errors}")
     console.print(f"  Új chunkok: {total_chunks}")
     console.print(f"  Összes chunk a DB-ben: {vector_store.get_count()}")
+    
+    # LLM sebesség összefoglaló
+    if all_perf.total_llm_calls > 0:
+        console.print(f"\n[bold]⏱ LLM Sebesség[/]")
+        console.print(f"  LLM hívások: {all_perf.total_llm_calls}")
+        console.print(f"  LLM összidő: {all_perf.total_elapsed:.1f} mp")
+        console.print(f"  Átl. hívás: {all_perf.avg_call_duration:.1f} mp")
+        console.print(f"  Input tokenek: {all_perf.total_input_tokens:,}")
+        console.print(f"  Output tokenek: {all_perf.total_output_tokens:,}")
+        console.print(f"  Átl. sebesség: [bold cyan]{all_perf.avg_tokens_per_second:.1f} tok/s[/]")
+        if all_perf.total_cost_usd > 0:
+            console.print(f"  [bold yellow]💰 Összes költség: ${all_perf.total_cost_usd:.6f}[/]")
+        else:
+            console.print(f"  💰 Költség: $0 (lokális)")
     console.print()
 
 

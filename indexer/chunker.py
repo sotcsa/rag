@@ -7,12 +7,60 @@ Fallback: rekurzív karakter-alapú chunkolás, ha az LLM nem elérhető.
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 import config
 from ollama_client import client
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMCallStats:
+    """Egyetlen LLM hívás statisztikái."""
+    elapsed_seconds: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+
+    @property
+    def tokens_per_second(self) -> float:
+        if self.elapsed_seconds > 0 and self.output_tokens > 0:
+            return self.output_tokens / self.elapsed_seconds
+        return 0.0
+
+
+@dataclass
+class ChunkingPerformance:
+    """Chunkolás összesített teljesítmény statisztika."""
+    total_elapsed: float = 0.0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_llm_calls: int = 0
+    total_cost_usd: float = 0.0
+    segment_stats: list = field(default_factory=list)
+
+    @property
+    def avg_tokens_per_second(self) -> float:
+        if self.total_elapsed > 0 and self.total_output_tokens > 0:
+            return self.total_output_tokens / self.total_elapsed
+        return 0.0
+
+    @property
+    def avg_call_duration(self) -> float:
+        if self.total_llm_calls > 0:
+            return self.total_elapsed / self.total_llm_calls
+        return 0.0
+
+    def add(self, stats: LLMCallStats, segment_idx: int):
+        self.total_elapsed += stats.elapsed_seconds
+        self.total_input_tokens += stats.input_tokens
+        self.total_output_tokens += stats.output_tokens
+        self.total_cost_usd += stats.cost_usd
+        self.total_llm_calls += 1
+        self.segment_stats.append((segment_idx, stats))
 
 
 @dataclass
@@ -275,7 +323,7 @@ def chunk_document_with_llm(
     source_file: str,
     model: str = None,
     progress_callback=None,
-) -> list[Chunk]:
+) -> tuple[list[Chunk], ChunkingPerformance]:
     """
     Dokumentum szöveg LLM-alapú chunkolása.
 
@@ -291,11 +339,12 @@ def chunk_document_with_llm(
         model: Ollama modell neve (alapértelmezett: config.LLM_MODEL)
 
     Returns:
-        Chunk objektumok listája
+        Tuple: (Chunk objektumok listája, ChunkingPerformance statisztika)
     """
     model = model or config.LLM_MODEL
     all_chunks: list[Chunk] = []
     chunk_index = 0
+    perf = ChunkingPerformance()
 
     # 1. Előszegmentálás
     segments = _pre_segment(text)
@@ -321,7 +370,6 @@ def chunk_document_with_llm(
             continue
 
         # 2. LLM-es chunkolás
-        import time
         max_retries = 3
         retry_delay_seconds = 2
         
@@ -338,8 +386,11 @@ def chunk_document_with_llm(
             )
 
         parsed = None
+        call_stats = None
         for attempt in range(1, max_retries + 1):
             try:
+                call_start = time.time()
+                
                 if model.startswith("openrouter/"):
                     import urllib.request
                     import json
@@ -369,6 +420,18 @@ def chunk_document_with_llm(
                         res_body = resp.read().decode("utf-8")
                         res_json = json.loads(res_body)
                         response_text = res_json["choices"][0]["message"]["content"]
+                    
+                    call_elapsed = time.time() - call_start
+                    
+                    # OpenRouter usage stats
+                    usage = res_json.get("usage", {})
+                    call_stats = LLMCallStats(
+                        elapsed_seconds=call_elapsed,
+                        input_tokens=usage.get("prompt_tokens", 0),
+                        output_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
+                        cost_usd=float(usage.get("cost", 0) or 0),
+                    )
                 else:
                     response = client.chat(
                         model=model,
@@ -382,6 +445,28 @@ def chunk_document_with_llm(
                         },
                     )
                     response_text = response["message"]["content"]
+                    
+                    call_elapsed = time.time() - call_start
+                    
+                    # Ollama token stats
+                    call_stats = LLMCallStats(
+                        elapsed_seconds=call_elapsed,
+                        input_tokens=response.get("prompt_eval_count", 0),
+                        output_tokens=response.get("eval_count", 0),
+                        total_tokens=response.get("prompt_eval_count", 0) + response.get("eval_count", 0),
+                    )
+                
+                # Log per-segment speed stats
+                cost_str = f" | ${call_stats.cost_usd:.6f}" if call_stats.cost_usd > 0 else ""
+                logger.info(
+                    "  ⏱ Szegmens %d/%d: %.1f mp | %d→%d token | %.1f tok/s%s",
+                    seg_idx + 1, len(segments),
+                    call_stats.elapsed_seconds,
+                    call_stats.input_tokens,
+                    call_stats.output_tokens,
+                    call_stats.tokens_per_second,
+                    cost_str,
+                )
                 
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
@@ -431,6 +516,10 @@ def chunk_document_with_llm(
                     )
 
         if parsed:
+            # Record performance stats for this segment
+            if call_stats:
+                perf.add(call_stats, seg_idx)
+            
             logger.info(
                 "  Szegmens %d/%d: LLM %d chunk-ot azonosított",
                 seg_idx + 1,
@@ -462,9 +551,25 @@ def chunk_document_with_llm(
                 )
                 chunk_index += 1
 
+    # Összesített LLM sebesség statisztika
+    if perf.total_llm_calls > 0:
+        cost_str = f" | Költség: ${perf.total_cost_usd:.6f}" if perf.total_cost_usd > 0 else " | Költség: $0 (lokális)"
+        logger.info(
+            "📊 LLM teljesítmény (%s): %d hívás | Össz.: %.1f mp | Átl.: %.1f mp/hívás | "
+            "%d input + %d output token | Átl. sebesség: %.1f tok/s%s",
+            source_file,
+            perf.total_llm_calls,
+            perf.total_elapsed,
+            perf.avg_call_duration,
+            perf.total_input_tokens,
+            perf.total_output_tokens,
+            perf.avg_tokens_per_second,
+            cost_str,
+        )
+
     logger.info(
         "Chunkolás kész: %d chunk (%s)",
         len(all_chunks),
         source_file,
     )
-    return all_chunks
+    return all_chunks, perf

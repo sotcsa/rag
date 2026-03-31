@@ -1,8 +1,9 @@
 """
-Dokumentum betöltők PDF, DOCX és TXT fájlokhoz.
+Dokumentum betöltők PDF, DOCX, TXT és MD fájlokhoz.
 A cél: strukturált szöveget kinyerni, ami alkalmas LLM-alapú chunkolásra.
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -106,10 +107,117 @@ def load_txt(file_path: Path) -> Document:
     )
 
 
+def _clean_markdown(text: str) -> str:
+    """
+    Markdown szöveg tisztítása RAG indexeléshez.
+    Eltávolítja a linkeket, képeket, HTML-t, lábjegyzeteket és egyéb
+    metaadat szekciókat, amelyek zavarják a szemantikus chunkolást.
+    """
+    # --- HTML elemek eltávolítása ---
+    # Video, table, és egyéb HTML tag-ek
+    text = re.sub(r"<[^>]+>", "", text)
+
+    # --- Képek eltávolítása ---
+    # ![alt text](url) formátumú képhivatkozások
+    # A (?:\\([^)]*\\)|[^)])* kezeli az escaped zárójeleket a Wikipedia URL-ekben
+    text = re.sub(r"!\[[^\]]*\]\((?:\\[()]+|[^)])*\)", "", text)
+
+    # --- Linkek szöveggé alakítása ---
+    # [megjelenő szöveg](url "title") → megjelenő szöveg
+    # Kezeli a Wikipedia-stílusú URL-eket escaped zárójelekkel és link title-ökkel
+    text = re.sub(r"\[([^\]]+)\]\((?:\\[()]+|[^)])*\)", r"\1", text)
+
+    # --- Maradék link title töredékek eltávolítása ---
+    # Pl. "A Gyűrűk Ura (filmsorozat)") → üres
+    text = re.sub(r'\s*"[^"]*"\)', "", text)
+
+    # --- Lábjegyzet-hivatkozások eltávolítása ---
+    # [^1], [^2] stb. inline hivatkozások
+    text = re.sub(r"\[\^\d+\]", "", text)
+
+    # --- Lábjegyzet-definíciók eltávolítása ---
+    # Sorok amelyek [^N]: -tal kezdődnek (és a folytatásuk)
+    text = re.sub(r"^\[\^\d+\]:.*$", "", text, flags=re.MULTILINE)
+
+    # --- Irreleváns szekciók eltávolítása ---
+    # Szekciók mint "További információk", "Jegyzetek", "Források",
+    # "Kapcsolódó szócikkek", "Fordítás", "Megjegyzések"
+    # Ezek a szekciók a szekció fejlécétől a következő azonos vagy magasabb
+    # szintű fejlécig vagy a fájl végéig tartanak.
+    irrelevant_sections = [
+        r"További információk",
+        r"Jegyzetek",
+        r"Források",
+        r"Kapcsolódó szócikkek",
+        r"Fordítás",
+        r"Megjegyzések",
+        r"Külső hivatkozások",
+        r"Lásd még",
+        r"Hivatkozások",
+        r"Bibliográfia",
+        r"Irodalom",
+        r"References",
+        r"External links",
+        r"See also",
+        r"Further reading",
+        r"Notes",
+    ]
+    for section_name in irrelevant_sections:
+        # Megkeresi a szekció fejlécét (bármilyen szintű ##)
+        # és eltávolítja a következő azonos/magasabb szintű fejlécig
+        pattern = (
+            r"^(#{1,6})\s+"
+            + section_name
+            + r"\s*$"
+            + r"(.*?)"
+            + r"(?=^\1(?!#)\s|\Z)"
+        )
+        text = re.sub(pattern, "", text, flags=re.MULTILINE | re.DOTALL)
+
+    # --- ISBN hivatkozások egyszerűsítése ---
+    # [ISBN 0-618-34399-7](url) → ISBN 0-618-34399-7
+    text = re.sub(
+        r"\[ISBN\s+([\d-]+)\]\([^)]*\)", r"ISBN \1", text
+    )
+
+    # --- Üres sorok normalizálása ---
+    # Több egymást követő üres sor → max 2 üres sor
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+
+    # Sorok eleji/végi felesleges szóközök
+    lines = [line.rstrip() for line in text.split("\n")]
+    text = "\n".join(lines)
+
+    # Kezdő és záró üres sorok
+    text = text.strip()
+
+    return text
+
+
+def load_md(file_path: Path) -> Document:
+    """
+    Markdown fájl betöltése és tisztítása RAG indexeléshez.
+    Eltávolítja a linkeket, képeket, HTML-t, lábjegyzeteket
+    és a metaadat szekciókat (Jegyzetek, Források, stb.).
+    """
+    raw_content = file_path.read_text(encoding="utf-8")
+    content = _clean_markdown(raw_content)
+
+    return Document(
+        content=content,
+        file_path=str(file_path),
+        file_type="md",
+        metadata={
+            "source": str(file_path),
+            "filename": file_path.name,
+        },
+    )
+
+
 def load_document(file_path: Path) -> Document:
     """
     Automatikus fájlformátum felismerés és betöltés.
-    Támogatott: .pdf, .docx, .txt
+    Támogatott: .pdf, .docx, .txt, .md
     """
     file_path = Path(file_path)
     suffix = file_path.suffix.lower()
@@ -118,7 +226,7 @@ def load_document(file_path: Path) -> Document:
         ".pdf": load_pdf,
         ".docx": load_docx,
         ".txt": load_txt,
-        ".md": load_txt,
+        ".md": load_md,
     }
 
     loader = loaders.get(suffix)

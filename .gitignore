@@ -12,6 +12,7 @@ chroma_db/
 tracking.db
 data/
 .env
+benchmark_results/
 
 # OS
 .DS_Store

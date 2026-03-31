@@ -34,6 +34,7 @@ Search: query → embed → vector search → LLM answer generation
 | Tracking | SQLite (`tracking.db`) | SHA-256 hash-based incremental indexing. |
 | PDF | `pymupdf4llm` | Outputs Markdown preserving headers/tables. |
 | DOCX | `python-docx` | Paragraph-level extraction with heading styles. |
+| Markdown | Direct file read | `.md` files read as-is, no conversion needed. |
 | Package mgr | `uv` | `pyproject.toml` is the source of truth for dependencies. |
 | CLI output | `rich` | Formatted tables, progress bars, streaming output. |
 | Env config | `python-dotenv` | Secrets and API keys loaded from `.env`. |
@@ -46,13 +47,15 @@ rag/
 ├── pyproject.toml             # uv project file + dependencies
 ├── requirements.txt           # Legacy reference (pyproject.toml is canonical)
 ├── setup.sh                   # One-time setup: Ollama models + uv sync
+├── ollama_client.py           # Shared Ollama client with explicit loopback + timeout
+├── benchmark.py               # Chunking benchmark tool for model comparison
 ├── .env                       # Local secrets (e.g. OpenRouter API key, ignored by git)
 ├── .env.example               # Template for the .env file
 ├── .gitignore
 │
 ├── indexer/                   # Document processing pipeline
 │   ├── __init__.py
-│   ├── document_loader.py     # PDF/DOCX/TXT → Document dataclass
+│   ├── document_loader.py     # PDF/DOCX/TXT/.md → Document dataclass
 │   ├── chunker.py             # LLM-based semantic chunking (Hungarian prompts)
 │   ├── embedder.py            # bge-m3 embedding generation via Ollama
 │   ├── vectorstore.py         # ChromaDB persistent storage wrapper
@@ -78,10 +81,16 @@ rag/
 - Documents are pre-segmented into ~3000-char blocks at paragraph boundaries
 - Each block is sent to `qwen2.5:14b` with a Hungarian prompt asking it to identify logical semantic units
 - The LLM returns JSON: `[{"summary": "...", "content": "..."}, ...]`
-- Robust JSON parsing handles markdown code blocks, extra text around JSON
-- **OpenRouter Support**: Chunking supports external cloud models (e.g., `openrouter/google/gemini-2.5-flash-free`) via API if configured in `.env`.
-- **Fallback**: If LLM fails or returns unparseable output, recursive character-based chunking (2000 chars, 200 overlap) is used
+- **Robust JSON Parsing**: Custom `_fix_json_strings()` handles invalid escapes (`\(`, `\[`), literal newlines in strings, and unescaped interior quotes
+- **LLM Retry Logic**: Each segment has up to 3 retries with a 2-second delay before falling back to chunk-based chunking
+- **OpenRouter Support**: Chunking supports external cloud models (e.g., `openrouter/google/gemini-2.5-flash-free`) via API if configured in `.env`. Also supports `openrouter/free` and `openrouter/auto` for auto-selecting free models.
+- **Fallback**: If LLM fails or returns unparseable output after all retries, recursive character-based chunking (2000 chars, 200 overlap) is used
 - Summaries are prepended to chunk text before embedding for better retrieval
+
+### Ollama Client (`ollama_client.py`)
+- Uses explicit `127.0.0.1` loopback IP to avoid DNS resolution issues (works offline / no WiFi)
+- Configures `300` second timeout (5 minutes) to handle slow chunking of large segments with 14B models
+- Shared client instance used by both chunking and search pipelines
 
 ### Incremental Indexing (`indexer/tracker.py`)
 - Each file's SHA-256 hash is stored in SQLite
@@ -103,14 +112,29 @@ rag/
 
 ### Running commands
 ```bash
+# Indexing
 uv run python index.py                    # Incremental indexing
 uv run python index.py --model modelname  # Override chunking model (e.g., qwen2.5:7b or openrouter/...)
+uv run python index.py --source-dir /path # Custom source directory
 uv run python index.py --status           # Show indexed files detail
 uv run python index.py --force            # Force full re-index
 uv run python index.py --file path/to/doc # Force re-index a single document
 uv run python index.py --remove path/doc  # Remove a single document from the index
+uv run python index.py --verbose          # Detailed logging
+
+# Search
 uv run python search.py "question"        # Single query
 uv run python search.py --chat            # Interactive chat
+uv run python search.py --list-sources    # List indexed sources
+
+# Benchmark (model comparison)
+uv run python benchmark.py                # Compare default models on all data/ files
+uv run python benchmark.py --file f.txt   # Single file benchmark
+uv run python benchmark.py --models a,b   # Custom model list (comma-separated)
+uv run python benchmark.py --search-test  # Add embedding similarity relevance test
+uv run python benchmark.py --save         # Save results to JSON
+uv run python benchmark.py --show-summaries # Show summaries per model
+uv run python benchmark.py --verbose      # Detailed logging
 ```
 
 ### Configuration
@@ -136,14 +160,24 @@ All tuneable parameters are in `config.py`. Key ones:
 - Answer temperature is hardcoded at 0.3 in `generator.py`
 - Chunking temperature is 0.1 (in `config.py`) for deterministic output
 
+### Benchmark Tool (`benchmark.py`)
+The benchmark tool compares chunking models across multiple dimensions:
+- **Speed**: Total time, token/s, speedup/slowdown vs reference model
+- **Quality**: Chunk count, word statistics (avg/median/min/max), fallback percentage, summary coverage
+- **Search Relevance**: Embedding-based cosine similarity test with configurable Hungarian queries (requires `--search-test`)
+- **Cost**: OpenRouter API cost tracking (`$` per model)
+
+Results are displayed in Rich comparison tables and can be saved to `benchmark_results/` (add this directory to `.gitignore`).
+
 ## Dependencies (from pyproject.toml)
 - `chromadb>=0.5.0` — Vector database
 - `pymupdf4llm>=0.0.10` — PDF extraction (depends on pymupdf)
 - `python-docx>=1.1.0` — DOCX extraction
 - `ollama>=0.4.0` — Ollama Python SDK
 - `rich>=13.0` — Terminal formatting
-- `python-dotenv` — Environment variable loading
+- `python-dotenv>=1.2.2` — Environment variable loading
 
 ## External Dependencies (not pip)
 - **Ollama** must be installed and running (`https://ollama.ai`)
 - Models must be pulled: `ollama pull qwen2.5:14b` and `ollama pull bge-m3`
+- **OpenRouter API key** (optional) — configured via `OPENROUTER_API_KEY` in `.env` for cloud-based chunking acceleration

@@ -54,8 +54,10 @@ Másold a feldolgozandó fájlokat a `data/` mappába:
 cp ~/dokumentumok/*.pdf data/
 cp ~/dokumentumok/*.docx data/
 cp ~/dokumentumok/*.txt data/
+cp ~/dokumentumok/*.md data/
 ```
 
+Támogatott formátumok: **PDF, DOCX, TXT, Markdown (.md)**.
 Almappák is támogatottak — a rendszer rekurzívan bejárja a könyvtárat.
 
 ### 2. Indexelés
@@ -98,6 +100,39 @@ uv run python search.py --chat
 # Indexelt források listázása
 uv run python search.py --list-sources
 ```
+
+### 4. Chunkolási Benchmark — Modell-összehasonlítás
+
+A `benchmark.py` segítségével különböző chunkolási modellek teljesítményét és minőségét hasonlíthatod össze:
+
+```bash
+# Összes data/ fájl benchmarkja az alapértelmezett modellekkel
+uv run python benchmark.py
+
+# Egyetlen fájl tesztelése
+uv run python benchmark.py --file data/teszt.txt
+
+# Saját modellek megadása
+uv run python benchmark.py --models qwen2.5:14b,qwen3.5,gemma3:12b
+
+# Keresési relevancia teszt is (embeddings alapú similáriság ellenőrzés)
+uv run python benchmark.py --search-test
+
+# Eredmények mentése JSON fájlba
+uv run python benchmark.py --save
+
+# Összefoglalók megjelenítése
+uv run python benchmark.py --show-summaries
+
+# Részletes naplózás
+uv run python benchmark.py --verbose
+```
+
+A benchmark kimenete:
+- **Sebesség összesítés** (idő, token/s, gyorsulás lassulás %-ban)
+- **Chunk minőség** (átlag/medián/min/max szavak, fallback %, összefoglalók %)
+- **Keresési relevancia** (cosine hasonlóság a tesztkérdésekre)
+- **Token és költség statisztikák** (OpenRouter API költségkövetés)
 
 ## 📊 Status kimenete
 
